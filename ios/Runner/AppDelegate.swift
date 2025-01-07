@@ -3,27 +3,35 @@ import UIKit
 
 @UIApplicationMain
 @objc class AppDelegate: FlutterAppDelegate {
+  private let SENSOR_CHANNEL = "com.example/sensorStream"
+  private let CONTROL_CHANNEL = "com.example/sensorControl"
+  private var timer: Timer?
+  private var eventSink: FlutterEventSink?
+
   override func application(
     _ application: UIApplication,
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
   ) -> Bool {
-
-    // Access the FlutterViewController
+    
     let controller: FlutterViewController = window?.rootViewController as! FlutterViewController
 
-    // Create a MethodChannel
-    let batteryChannel = FlutterMethodChannel(name: "my_channel",
-                                              binaryMessenger: controller.binaryMessenger)
+    // Set up the EventChannel for streaming data
+    let eventChannel = FlutterEventChannel(name: SENSOR_CHANNEL, binaryMessenger: controller.binaryMessenger)
+    eventChannel.setStreamHandler(self)
 
-    // Set the MethodCallHandler for the MethodChannel
-    batteryChannel.setMethodCallHandler { [weak self] (call: FlutterMethodCall, result: FlutterResult) -> Void in
-      // Handle incoming method calls from Flutter
-      guard call.method == "getBatteryLevel" else {
-        result(FlutterMethodNotImplemented) // Return if the method is not implemented
-        return
+    // Set up the MethodChannel for controlling the stream
+    let methodChannel = FlutterMethodChannel(name: CONTROL_CHANNEL, binaryMessenger: controller.binaryMessenger)
+    methodChannel.setMethodCallHandler { [weak self] (call: FlutterMethodCall, result: FlutterResult) in
+      switch call.method {
+      case "startStream":
+        self?.startStream()
+        result(nil)
+      case "stopStream":
+        self?.stopStream()
+        result(nil)
+      default:
+        result(FlutterMethodNotImplemented)
       }
-      // Call the function to retrieve the battery level
-      self?.receiveBatteryLevel(result: result)
     }
 
     // Register plugins
@@ -31,19 +39,33 @@ import UIKit
     return super.application(application, didFinishLaunchingWithOptions: launchOptions)
   }
 
-  // Method to get the device battery level
-  private func receiveBatteryLevel(result: FlutterResult) {
-    let device = UIDevice.current
-    device.isBatteryMonitoringEnabled = true // Enable battery monitoring
-
-    // Check if the battery state is unknown
-    if device.batteryState == UIDevice.BatteryState.unknown {
-      result(FlutterError(code: "UNAVAILABLE",
-                          message: "Battery level not available.",
-                          details: nil))
-    } else {
-      // Return the battery level as an integer percentage
-      result(Int(device.batteryLevel * 100))
+  private func startStream() {
+    if timer == nil {
+      timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+        guard let eventSink = self?.eventSink else { return }
+        let simulatedData = Int.random(in: 0...100) // Simulated sensor data
+        eventSink(simulatedData)
+      }
     }
   }
+
+  private func stopStream() {
+    timer?.invalidate()
+    timer = nil
+    eventSink = nil
+  }
 }
+
+// Extend AppDelegate to conform to FlutterStreamHandler
+extension AppDelegate: FlutterStreamHandler {
+  func onListen(withArguments arguments: Any?, eventSink events: @escaping FlutterEventSink) -> FlutterError? {
+    self.eventSink = events
+    return nil
+  }
+
+  func onCancel(withArguments arguments: Any?) -> FlutterError? {
+    self.eventSink = nil
+    return nil
+  }
+}
+

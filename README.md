@@ -25,8 +25,8 @@ This is a sample Flutter project demonstrating the use of a Method Channel to co
 **Setup and Usage**
 1. Clone the repository
 
-    git clone https://github.com/yourusername/flutter_method_channel_example.git
-    cd flutter_method_channel_example
+    git clone https://github.com/yourusername/flutter_channels.git
+    cd flutter_channels
 
 2. Install dependencies
     Run the following command to install Flutter dependencies:
@@ -50,25 +50,59 @@ This is a sample Flutter project demonstrating the use of a Method Channel to co
 // step 1..
 <!-- Define Method channel Name -->
 
-static const platform = MethodChannel('my_channel');
-String _batteryLevel = 'Unknown battery level.';
+static const EventChannel _eventChannel = EventChannel('com.example/sensorStream');
+static const MethodChannel _methodChannel = MethodChannel('com.example/sensorControl');
+String _sensorData = "No data received";
+bool _isListening = false;
 
 // step 2..
 <!-- Native Code Implementation -->
 
 // Step 3..
-<!-- Get battery level. -->
-Future<void> _getBatteryLevel() async {
-    String batteryLevel;
-    try {
-      final result = await platform.invokeMethod<int>('getBatteryLevel');
-      batteryLevel = 'Battery level at $result % .';
-    } on PlatformException catch (e) {
-      batteryLevel = "Failed to get battery level: '${e.message}'.";
-    }
+
+// Start the sensor stream
+void _startSensorStream() async {
+  try {
+    await _methodChannel.invokeMethod('startStream');
     setState(() {
-      _batteryLevel = batteryLevel;
+      _isListening = true;
+      _sensorData = "Waiting for sensor data...";
     });
+
+    // Listen to the Event Channel
+    _eventChannel.receiveBroadcastStream().listen((data) {
+      setState(() {
+        _sensorData = "Sensor Data: $data";
+      });
+    },onError: (error) {
+      setState(() {
+        _sensorData = "Error: ${error.message}";
+      });
+    },onDone: () {
+      setState(() {
+        _isListening = false;
+        });
+      });
+  }catch (e) {
+    setState(() {
+      _sensorData = "Error starting stream: $e";
+    });
+  }
+}
+
+// Stop the sensor stream
+void _stopSensorStream() async {
+  try{
+    await _methodChannel.invokeMethod('stopStream');
+      setState(() {
+      _sensorData = "Stream stopped";
+      _isListening = false;
+    });
+  }catch (e) {
+    setState(() {
+        _sensorData = "Error stopping stream: $e";
+    });
+  }
 }
 
 
@@ -83,67 +117,90 @@ Future<void> _getBatteryLevel() async {
                                                             <!-- MainActivity.kt -->
 <!------------------------------------------------------------------------------------------------------------------------------------>
 
-package com.example.flutter_method_channel
-import android.annotation.SuppressLint
-import android.content.Context
-import android.content.ContextWrapper
-import android.content.Intent
-import android.content.IntentFilter
-import android.os.BatteryManager
-import android.os.Build
-import android.os.Build.VERSION.*
+
+package com.example.flutter_channels
+import android.os.Handler
+import android.os.Looper
 import io.flutter.embedding.android.FlutterActivity
-import io.flutter.embedding.engine.FlutterEngine
+import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodChannel
 
-class MainActivity: FlutterActivity() {
-    // Define the MethodChannel name
-    private val myChannel = "my_channel"
+class MainActivity : FlutterActivity() {
+    private val SENSOR_CHANNEL = "com.example/sensorStream"
+    private val CONTROL_CHANNEL = "com.example/sensorControl"
 
-    // Configure the FlutterEngine to set up the MethodChannel
-    override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
+    private var handler: Handler? = null
+    private var runnable: Runnable? = null
+    private var eventSink: EventChannel.EventSink? = null
+
+    override fun configureFlutterEngine(flutterEngine: io.flutter.embedding.engine.FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
 
-        // Create a MethodChannel and set a MethodCallHandler
-        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, myChannel).setMethodCallHandler { call, result ->
-            // Handle method calls from Flutter on the main thread
-            if (call.method == "getBatteryLevel") {
-                // Get the battery level using the getBatteryLevel() method
-                val batteryLevel = getBatteryLevel()
-
-                if (batteryLevel != -1) {
-                    // Return the battery level to Flutter if available
-                    result.success(batteryLevel)
-                } else {
-                    // Return an error to Flutter if the battery level is not available
-                    result.error("UNAVAILABLE", "Battery level not available.", null)
+        // Event Channel
+        EventChannel(flutterEngine.dartExecutor.binaryMessenger, SENSOR_CHANNEL).setStreamHandler(
+            object : EventChannel.StreamHandler {
+                override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
+                    eventSink = events
                 }
-            } else {
-                // Return 'not implemented' if the method is not recognized
-                result.notImplemented()
+
+                override fun onCancel(arguments: Any?) {
+                    this@MainActivity.eventSink = null
+                }
+            }
+        )
+
+        // Method Channel for control
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CONTROL_CHANNEL).setMethodCallHandler { call, result ->
+            when (call.method) {
+                "startStream" -> {
+                    startStream()
+                    result.success(null)
+                }
+                "stopStream" -> {
+                    stopStream()
+                    result.success(null)
+                }
+                else -> result.notImplemented()
             }
         }
     }
 
-    // Method to get the battery level of the device
-    @SuppressLint("ObsoleteSdkInt")
-    private fun getBatteryLevel(): Int {
-        val batteryLevel: Int
-
-        // Check if the Android version is Lollipop (API 21) or higher
-        if (SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            // Use BatteryManager to get the battery level for modern devices
-            val batteryManager = getSystemService(Context.BATTERY_SERVICE) as BatteryManager
-            batteryLevel = batteryManager.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
-        } else {
-            // For older devices, use the battery level from the Intent broadcast
-            val intent = ContextWrapper(applicationContext).registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
-            batteryLevel = intent!!.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) * 100 /
-                           intent.getIntExtra(BatteryManager.EXTRA_SCALE, -1)
+    // Start the stream
+    private fun startStream() {
+        try {
+            if (handler == null) {
+                handler = Handler(Looper.getMainLooper())
+                runnable = object : Runnable {
+                    override fun run() {
+                        try {
+                            val simulatedData = (0..100).random() // Simulated sensor data
+                            eventSink?.success(simulatedData)
+                            handler?.postDelayed(this, 1000) // Stream data every second
+                        } catch (e: Exception) {
+                            // Handle any exceptions that may occur during data streaming
+                            e.printStackTrace()
+                        }
+                    }
+                }
+                handler?.post(runnable!!)
+            }
+        } catch (e: Exception) {
+            // Handle any exceptions that may occur when starting the stream
+            e.printStackTrace()
         }
+    }
 
-        // Return the calculated battery level
-        return batteryLevel
+    // Stop the stream
+    private fun stopStream() {
+        try {
+            handler?.removeCallbacks(runnable!!)
+            handler = null
+            runnable = null
+            eventSink = null
+        } catch (e: Exception) {
+            // Handle any exceptions that may occur when stopping the stream
+            e.printStackTrace()
+        }
     }
 }
 
@@ -160,32 +217,41 @@ class MainActivity: FlutterActivity() {
                                                         <!-- AppDelegate.swift -->
 <!------------------------------------------------------------------------------------------------------------------------------------>
 
+
 import Flutter
 import UIKit
 
 @UIApplicationMain
 @objc class AppDelegate: FlutterAppDelegate {
+  private let SENSOR_CHANNEL = "com.example/sensorStream"
+  private let CONTROL_CHANNEL = "com.example/sensorControl"
+  private var timer: Timer?
+  private var eventSink: FlutterEventSink?
+
   override func application(
     _ application: UIApplication,
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
   ) -> Bool {
-
-    // Access the FlutterViewController
+    
     let controller: FlutterViewController = window?.rootViewController as! FlutterViewController
 
-    // Create a MethodChannel
-    let batteryChannel = FlutterMethodChannel(name: "my_channel",
-                                              binaryMessenger: controller.binaryMessenger)
+    // Set up the EventChannel for streaming data
+    let eventChannel = FlutterEventChannel(name: SENSOR_CHANNEL, binaryMessenger: controller.binaryMessenger)
+    eventChannel.setStreamHandler(self)
 
-    // Set the MethodCallHandler for the MethodChannel
-    batteryChannel.setMethodCallHandler { [weak self] (call: FlutterMethodCall, result: FlutterResult) -> Void in
-      // Handle incoming method calls from Flutter
-      guard call.method == "getBatteryLevel" else {
-        result(FlutterMethodNotImplemented) // Return if the method is not implemented
-        return
+    // Set up the MethodChannel for controlling the stream
+    let methodChannel = FlutterMethodChannel(name: CONTROL_CHANNEL, binaryMessenger: controller.binaryMessenger)
+    methodChannel.setMethodCallHandler { [weak self] (call: FlutterMethodCall, result: FlutterResult) in
+      switch call.method {
+      case "startStream":
+        self?.startStream()
+        result(nil)
+      case "stopStream":
+        self?.stopStream()
+        result(nil)
+      default:
+        result(FlutterMethodNotImplemented)
       }
-      // Call the function to retrieve the battery level
-      self?.receiveBatteryLevel(result: result)
     }
 
     // Register plugins
@@ -193,22 +259,36 @@ import UIKit
     return super.application(application, didFinishLaunchingWithOptions: launchOptions)
   }
 
-  // Method to get the device battery level
-  private func receiveBatteryLevel(result: FlutterResult) {
-    let device = UIDevice.current
-    device.isBatteryMonitoringEnabled = true // Enable battery monitoring
-
-    // Check if the battery state is unknown
-    if device.batteryState == UIDevice.BatteryState.unknown {
-      result(FlutterError(code: "UNAVAILABLE",
-                          message: "Battery level not available.",
-                          details: nil))
-    } else {
-      // Return the battery level as an integer percentage
-      result(Int(device.batteryLevel * 100))
+  private func startStream() {
+    if timer == nil {
+      timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+        guard let eventSink = self?.eventSink else { return }
+        let simulatedData = Int.random(in: 0...100) // Simulated sensor data
+        eventSink(simulatedData)
+      }
     }
   }
+
+  private func stopStream() {
+    timer?.invalidate()
+    timer = nil
+    eventSink = nil
+  }
 }
+
+// Extend AppDelegate to conform to FlutterStreamHandler
+extension AppDelegate: FlutterStreamHandler {
+  func onListen(withArguments arguments: Any?, eventSink events: @escaping FlutterEventSink) -> FlutterError? {
+    self.eventSink = events
+    return nil
+  }
+
+  func onCancel(withArguments arguments: Any?) -> FlutterError? {
+    self.eventSink = nil
+    return nil
+  }
+}
+
 
 <!------------------------------------------------------------------------------------------------------------------------------------>
 

@@ -14,39 +14,79 @@ class MainApp extends StatefulWidget {
 
 class _MainAppState extends State<MainApp> {
   // step 1..
-  static const platform = MethodChannel('my_channel');
-  String _batteryLevel = 'Unknown battery level.';
+  static const EventChannel _eventChannel =
+      EventChannel('com.example/sensorStream');
+  static const MethodChannel _methodChannel =
+      MethodChannel('com.example/sensorControl');
+
+  String _sensorData = "No data received";
+  bool _isListening = false;
 
   // Step 3..
-  // Get battery level.
-  Future<void> _getBatteryLevel() async {
-    String batteryLevel;
-    try {
-      final result = await platform.invokeMethod<int>('getBatteryLevel');
-      batteryLevel = 'Battery level at $result % .';
-    } on PlatformException catch (e) {
-      batteryLevel = "Failed to get battery level: '${e.message}'.";
-    }
 
-    setState(() {
-      _batteryLevel = batteryLevel;
-    });
+  // Start the sensor stream
+  void _startSensorStream() async {
+    try {
+      await _methodChannel.invokeMethod('startStream');
+      setState(() {
+        _isListening = true;
+        _sensorData = "Waiting for sensor data...";
+      });
+
+      // Listen to the Event Channel
+      _eventChannel.receiveBroadcastStream().listen((data) {
+        setState(() {
+          _sensorData = "Sensor Data: $data";
+        });
+      }, onError: (error) {
+        setState(() {
+          _sensorData = "Error: ${error.message}";
+        });
+      }, onDone: () {
+        setState(() {
+          _isListening = false;
+        });
+      });
+    } catch (e) {
+      setState(() {
+        _sensorData = "Error starting stream: $e";
+      });
+    }
+  }
+
+  // Stop the sensor stream
+  void _stopSensorStream() async {
+    try {
+      await _methodChannel.invokeMethod('stopStream');
+      setState(() {
+        _sensorData = "Stream stopped";
+        _isListening = false;
+      });
+    } catch (e) {
+      setState(() {
+        _sensorData = "Error stopping stream: $e";
+      });
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: "Method Channel",
+      title: "Event Channel",
       home: Scaffold(
         body: Center(
           child: Column(
             mainAxisAlignment: MainAxisAlignment.spaceEvenly,
             children: [
+              Text(_sensorData),
               ElevatedButton(
-                onPressed: _getBatteryLevel,
-                child: const Text('Get Battery Level'),
+                onPressed: _isListening ? null : _startSensorStream,
+                child: Text("Start Listening"),
               ),
-              Text(_batteryLevel),
+              ElevatedButton(
+                onPressed: _isListening ? _stopSensorStream : null,
+                child: Text("Stop Listening"),
+              ),
             ],
           ),
         ),

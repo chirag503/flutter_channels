@@ -1,54 +1,84 @@
 package com.example.flutter_channels
-
-import android.annotation.SuppressLint
-import android.content.Context
-import android.content.ContextWrapper
-import android.content.Intent
-import android.content.IntentFilter
-import android.os.BatteryManager
-import android.os.Build
-import android.os.Build.VERSION.*
+import android.os.Handler
+import android.os.Looper
 import io.flutter.embedding.android.FlutterActivity
-import io.flutter.embedding.engine.FlutterEngine
+import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodChannel
 
-class MainActivity: FlutterActivity() {
+class MainActivity : FlutterActivity() {
+    private val SENSOR_CHANNEL = "com.example/sensorStream"
+    private val CONTROL_CHANNEL = "com.example/sensorControl"
 
-    // Step 2..
-    private val myChannel = "my_channel"
-    override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
+    private var handler: Handler? = null
+    private var runnable: Runnable? = null
+    private var eventSink: EventChannel.EventSink? = null
+
+    override fun configureFlutterEngine(flutterEngine: io.flutter.embedding.engine.FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
-        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, myChannel).setMethodCallHandler {
-                call, result ->
-            // This method is invoked on the main thread.
-            if (call.method == "getBatteryLevel") {
-                val batteryLevel = getBatteryLevel()
 
-                if (batteryLevel != -1) {
-                    result.success(batteryLevel)
-                } else {
-                    result.error("UNAVAILABLE", "Battery level not available.", null)
+        // Event Channel
+        EventChannel(flutterEngine.dartExecutor.binaryMessenger, SENSOR_CHANNEL).setStreamHandler(
+            object : EventChannel.StreamHandler {
+                override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
+                    eventSink = events
                 }
-            } else {
-                result.notImplemented()
+
+                override fun onCancel(arguments: Any?) {
+                    this@MainActivity.eventSink = null
+                }
+            }
+        )
+
+        // Method Channel for control
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CONTROL_CHANNEL).setMethodCallHandler { call, result ->
+            when (call.method) {
+                "startStream" -> {
+                    startStream()
+                    result.success(null)
+                }
+                "stopStream" -> {
+                    stopStream()
+                    result.success(null)
+                }
+                else -> result.notImplemented()
             }
         }
     }
 
-
-    // Get the battery level
-    @SuppressLint("ObsoleteSdkInt")
-    private fun getBatteryLevel(): Int {
-        val batteryLevel: Int
-        if (SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            val batteryManager = getSystemService(Context.BATTERY_SERVICE) as BatteryManager
-            batteryLevel = batteryManager.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
-        } else {
-            val intent = ContextWrapper(applicationContext).registerReceiver(null, IntentFilter(
-                Intent.ACTION_BATTERY_CHANGED))
-            batteryLevel = intent!!.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) * 100 / intent.getIntExtra(BatteryManager.EXTRA_SCALE, -1)
+    private fun startStream() {
+        try {
+            if (handler == null) {
+                handler = Handler(Looper.getMainLooper())
+                runnable = object : Runnable {
+                    override fun run() {
+                        try {
+                            val simulatedData = (0..100).random() // Simulated sensor data
+                            eventSink?.success(simulatedData)
+                            handler?.postDelayed(this, 1000) // Stream data every second
+                        } catch (e: Exception) {
+                            // Handle any exceptions that may occur during data streaming
+                            e.printStackTrace()
+                        }
+                    }
+                }
+                handler?.post(runnable!!)
+            }
+        } catch (e: Exception) {
+            // Handle any exceptions that may occur when starting the stream
+            e.printStackTrace()
         }
-
-        return batteryLevel
     }
+
+    private fun stopStream() {
+        try {
+            handler?.removeCallbacks(runnable!!)
+            handler = null
+            runnable = null
+            eventSink = null
+        } catch (e: Exception) {
+            // Handle any exceptions that may occur when stopping the stream
+            e.printStackTrace()
+        }
+    }
+
 }
